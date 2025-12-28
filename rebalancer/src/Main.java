@@ -1,44 +1,63 @@
+
+
+
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 import model.AssetClass;
+import model.AssetPosition;
 import model.Portfolio;
 import model.RebalancingResult;
+import model.TaxLot;
+import repository.InMemoryPortfolioRepository;
+import service.MarketPriceProvider;
 import service.RebalancingService;
-import repository.*;
+
 public class Main {
 
     public static void main(String[] args) {
         System.out.println("Starting Tax-Aware Portfolio Rebalancing Engine...");
 
-        // In a real application, prices would be fetched from a live data feed.
-        final Map<AssetClass, BigDecimal> currentMarketPrices = Map.of(
-            AssetClass.STOCKS, new BigDecimal("205.50"), // Simulating stock market growth
-            AssetClass.BONDS, new BigDecimal("101.25")  // Simulating stable bond prices
+        // --- Configuration Loading ---
+        // RATIONALE: In a production app, these values would come from a config file,
+        // environment variables, or a configuration server.
+        final double driftThreshold = 0.05;
+        final BigDecimal tradeMinimum = new BigDecimal("100.00");
+
+        // --- Dependency Initialization ---
+        MarketPriceProvider priceProvider = new MarketPriceProvider();
+        InMemoryPortfolioRepository portfolioRepository = new InMemoryPortfolioRepository();
+
+        // --- Data Loading ---
+        // RATIONALE: This simulates loading data from a persistent source (like a DB).
+        // The repository is no longer responsible for creating its own data.
+        loadSampleData(portfolioRepository);
+
+        // --- Service Execution ---
+        final Map<AssetClass, BigDecimal> currentMarketPrices = priceProvider.getCurrentMarketPrices();
+        
+        // The service is now created with its dependencies and configuration injected.
+        RebalancingService rebalancingService = new RebalancingService(
+            currentMarketPrices,
+            driftThreshold,
+            tradeMinimum
         );
 
-        // 1. Initialize dependencies
-        PortfolioRepository portfolioRepository = new InMemoryPortfolioRepository();
-        RebalancingService rebalancingService = new RebalancingService(currentMarketPrices);
-
-        // 2. Fetch all portfolios
         List<Portfolio> allPortfolios = portfolioRepository.findAll();
         System.out.printf("Found %d portfolios to process.%n", allPortfolios.size());
         System.out.println("----------------------------------------------------");
 
-        // 3. Process portfolios in batch
         List<CompletableFuture<RebalancingResult>> futures = rebalancingService.processPortfoliosInBatch(allPortfolios);
-
-        // 4. Wait for all tasks to complete and collect results
         List<RebalancingResult> results = futures.stream()
             .map(CompletableFuture::join)
             .collect(Collectors.toList());
 
-        // 5. Display the results for each portfolio
         results.forEach(Main::printResult);
 
         System.out.println("Rebalancing engine has completed its run.");
@@ -61,5 +80,34 @@ public class Main {
                 result.totalRealizedGainLoss().setScale(2, RoundingMode.HALF_UP));
         }
         System.out.println("----------------------------------------------------");
+    }
+
+    /**
+     * Loads sample portfolio data into the repository.
+     * This method acts as a stand-in for a data migration or ETL process.
+     * @param repository The repository to load data into.
+     */
+    private static void loadSampleData(InMemoryPortfolioRepository repository) {
+        // --- Portfolio 1: Significantly drifted, requires rebalancing ---
+        var stockLots1 = List.of(
+            new TaxLot(LocalDate.now().minusYears(2), new BigDecimal("100.00"), new BigDecimal("350")),
+            new TaxLot(LocalDate.now().minusMonths(6), new BigDecimal("150.00"), new BigDecimal("100"))
+        );
+        var bondLots1 = List.of(new TaxLot(LocalDate.now().minusYears(3), new BigDecimal("95.00"), new BigDecimal("300")));
+        repository.save(new Portfolio(1L, Map.of(AssetClass.STOCKS, new AssetPosition(AssetClass.STOCKS, stockLots1), AssetClass.BONDS, new AssetPosition(AssetClass.BONDS, bondLots1)), Map.of(AssetClass.STOCKS, 0.60, AssetClass.BONDS, 0.40)));
+
+        // --- Portfolio 2: Minor drift, within threshold ---
+        var stockLots2 = List.of(new TaxLot(LocalDate.now().minusYears(1).minusMonths(1), new BigDecimal("50.00"), new BigDecimal("1000")));
+        var bondLots2 = List.of(new TaxLot(LocalDate.now().minusYears(1), new BigDecimal("100.00"), new BigDecimal("480")));
+        repository.save(new Portfolio(2L, Map.of(AssetClass.STOCKS, new AssetPosition(AssetClass.STOCKS, stockLots2), AssetClass.BONDS, new AssetPosition(AssetClass.BONDS, bondLots2)), Map.of(AssetClass.STOCKS, 0.50, AssetClass.BONDS, 0.50)));
+
+        // --- Portfolio 3: With tax loss harvesting opportunities ---
+        var stockLots3 = List.of(
+            new TaxLot(LocalDate.now().minusDays(90), new BigDecimal("220.00"), new BigDecimal("100")),
+            new TaxLot(LocalDate.now().minusDays(20), new BigDecimal("210.00"), new BigDecimal("50")),
+            new TaxLot(LocalDate.now().minusYears(2), new BigDecimal("100.00"), new BigDecimal("300"))
+        );
+        var bondLots3 = List.of(new TaxLot(LocalDate.now().minusYears(4), new BigDecimal("98.00"), new BigDecimal("150")));
+        repository.save(new Portfolio(3L, Map.of(AssetClass.STOCKS, new AssetPosition(AssetClass.STOCKS, stockLots3), AssetClass.BONDS, new AssetPosition(AssetClass.BONDS, bondLots3)), Map.of(AssetClass.STOCKS, 0.40, AssetClass.BONDS, 0.60)));
     }
 }
